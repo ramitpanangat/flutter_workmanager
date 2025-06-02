@@ -11,17 +11,11 @@ import com.google.common.util.concurrent.ListenableFuture
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.embedding.engine.loader.FlutterLoader
-import io.flutter.embedding.engine.plugins.shim.ShimPluginRegistry
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.FlutterCallbackInformation
 import java.util.Random
 
-/***
- * A simple worker that will post your input back to your Flutter application.
- *
- * It will block the background thread until a value of either true or false is received back from Flutter code.
- */
 class BackgroundWorker(
     applicationContext: Context,
     private val workerParams: WorkerParameters
@@ -43,13 +37,13 @@ class BackgroundWorker(
         private val flutterLoader = FlutterLoader()
     }
 
-    private val payload
+    private val payload: String?
         get() = workerParams.inputData.getString(PAYLOAD_KEY)
 
-    private val dartTask
+    private val dartTask: String
         get() = workerParams.inputData.getString(DART_TASK_KEY)!!
 
-    private val isInDebug
+    private val isInDebug: Boolean
         get() = workerParams.inputData.getBoolean(IS_IN_DEBUG_MODE_KEY, false)
 
     private val randomThreadIdentifier = Random().nextInt()
@@ -59,7 +53,7 @@ class BackgroundWorker(
 
     private var completer: CallbackToFutureAdapter.Completer<Result>? = null
 
-    private var resolvableFuture = CallbackToFutureAdapter.getFuture { completer ->
+    private val resolvableFuture = CallbackToFutureAdapter.getFuture<Result> { completer ->
         this.completer = completer
         null
     }
@@ -94,14 +88,11 @@ class BackgroundWorker(
                 )
             }
 
-            // Backwards compatibility with v1. We register all the user's plugins.
-            WorkmanagerPlugin.pluginRegistryCallback?.registerWith(ShimPluginRegistry(engine!!))
-
-            engine?.let { engine ->
-                backgroundChannel = MethodChannel(engine.dartExecutor, BACKGROUND_CHANNEL_NAME)
+            engine?.let { flutterEngine ->
+                backgroundChannel = MethodChannel(flutterEngine.dartExecutor, BACKGROUND_CHANNEL_NAME)
                 backgroundChannel.setMethodCallHandler(this@BackgroundWorker)
 
-                engine.dartExecutor.executeDartCallback(
+                flutterEngine.dartExecutor.executeDartCallback(
                     DartExecutor.DartCallback(
                         applicationContext.assets,
                         dartBundlePath,
@@ -132,13 +123,8 @@ class BackgroundWorker(
             )
         }
 
-        // No result indicates we were signalled to stop by WorkManager.  The result is already
-        // STOPPED, so no need to resolve another one.
-        if (result != null) {
-            this.completer?.set(result)
-        }
+        result?.let { completer?.set(it) }
 
-        // If stopEngine is called from `onStopped`, it may not be from the main thread.
         Handler(Looper.getMainLooper()).post {
             engine?.destroy()
             engine = null
@@ -147,7 +133,7 @@ class BackgroundWorker(
 
     override fun onMethodCall(call: MethodCall, r: MethodChannel.Result) {
         when (call.method) {
-            BACKGROUND_CHANNEL_INITIALIZED ->
+            BACKGROUND_CHANNEL_INITIALIZED -> {
                 backgroundChannel.invokeMethod(
                     "onResultSend",
                     mapOf(DART_TASK_KEY to dartTask, PAYLOAD_KEY to payload),
@@ -156,21 +142,18 @@ class BackgroundWorker(
                             stopEngine(Result.failure())
                         }
 
-                        override fun error(
-                            errorCode: String,
-                            errorMessage: String?,
-                            errorDetails: Any?
-                        ) {
+                        override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
                             Log.e(TAG, "errorCode: $errorCode, errorMessage: $errorMessage")
                             stopEngine(Result.failure())
                         }
 
                         override fun success(receivedResult: Any?) {
-                            val wasSuccessFul = receivedResult?.let { it as Boolean? } == true
-                            stopEngine(if (wasSuccessFul) Result.success() else Result.retry())
+                            val wasSuccess = receivedResult as? Boolean ?: false
+                            stopEngine(if (wasSuccess) Result.success() else Result.retry())
                         }
                     }
                 )
+            }
         }
     }
 }
